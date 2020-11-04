@@ -1022,7 +1022,7 @@ void *handle_socket(void *arg)
 
 #ifdef HAVE_PTHREAD
     sync_callback(1);
-
+	
 //    ++client_count;
 #if 0
 

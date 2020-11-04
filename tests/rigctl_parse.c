@@ -70,6 +70,36 @@ extern int read_history();
 
 #include "rigctl_parse.h"
 
+
+
+#include <sys/types.h>          /* See NOTES */
+
+#ifdef HAVE_NETINET_IN_H
+#  include <netinet/in.h>
+#endif
+
+#ifdef HAVE_ARPA_INET_H
+#  include <arpa/inet.h>
+#endif
+
+#ifdef HAVE_SYS_SOCKET_H
+#  include <sys/socket.h>
+#elif HAVE_WS2TCPIP_H
+#  include <ws2tcpip.h>
+#  include <fcntl.h>
+#  if defined(HAVE_WSPIAPI_H)
+#    include <wspiapi.h>
+#  endif
+#endif
+
+#ifdef HAVE_NETDB_H
+#  include <netdb.h>
+#endif
+
+#ifdef HAVE_PTHREAD
+#  include <pthread.h>
+#endif
+
 /* Hash table implementation See:  http://uthash.sourceforge.net/ */
 #include "uthash.h"
 
@@ -1944,6 +1974,99 @@ int set_conf(RIG *my_rig, char *conf_parms)
 }
 
 
+
+
+static const char* s_sdr_server  = "127.0.0.1";
+static uint16_t    s_sdr_port    = 7356;
+
+void log_unix_error( const char* prefix )
+{
+    char buffer[512] = {0};
+    strerror_r( errno, buffer, sizeof( buffer ) );
+    
+    char finalBuffer[1024] = {0};
+    strcat( finalBuffer, prefix );
+    strcat( finalBuffer, buffer );
+    strcat( finalBuffer, "\n" );
+    printf( finalBuffer );
+}
+
+
+// returns fd to use to communicate with
+int connect_to_sdr( void )
+{
+    int              error              = 0;
+    char             foundValidServerIP = 0;
+    struct addrinfo* result             = NULL;
+    struct addrinfo* results;
+    int              socket_desc        = -1;
+
+    error = getaddrinfo( s_sdr_server, NULL, NULL, &results );
+    if( error != 0 )
+    {
+        if( error == EAI_SYSTEM )
+        {
+            log_unix_error( "connect_to_sdr:getaddrinfo: " );
+        }
+        else
+        {
+            printf( "error in getaddrinfo: %s\n", s_sdr_server );
+        }
+        return error;
+    }
+
+    for( result = results; result != NULL; result = result->ai_next )
+    {
+        /* For readability later: */
+        struct sockaddr* const addressinfo = result->ai_addr;
+
+        socket_desc = socket( addressinfo->sa_family, SOCK_STREAM, IPPROTO_TCP );
+        if( socket_desc < 0 )
+        {
+            log_unix_error( "connect_to_sdr:socket: " );
+            continue; /* for loop */
+        }
+
+        /* Assign the port number. */
+        switch (addressinfo->sa_family)
+        {
+            case AF_INET:
+                ((struct sockaddr_in*)addressinfo)->sin_port   = htons( s_sdr_port );
+                break;
+            case AF_INET6:
+                ((struct sockaddr_in6*)addressinfo)->sin6_port = htons( s_sdr_port );
+                break;
+        }
+
+        if( connect( socket_desc, addressinfo, result->ai_addrlen ) >= 0 )
+        {
+            foundValidServerIP = 1;
+            break; /* for loop */
+        }
+        else
+        {
+            log_unix_error( "connect_to_sdr:connect: " );
+            shutdown( socket_desc, 2 );
+            close( socket_desc );
+        }
+    }
+    freeaddrinfo( results );
+    if( foundValidServerIP == 0 )
+    {
+        printf( "connect_to_sdr: could not connect to the SDR port.\n" );
+        if( error )
+            return error;
+        else
+            return -1;
+    }
+
+    return socket_desc;
+}
+
+
+
+
+
 /*
  * static int (f)(RIG *rig, FILE *fout, int interactive, const struct test_table *cmd,
  *      vfo_t vfo, const void *arg1, const void *arg2, const void *arg3)
@@ -1958,6 +2081,9 @@ declare_proto_rig(set_freq)
     char *fmt = "%"PRIll"%c";
 #endif
 
+/*    printf( "set freq: %s\n", arg1 ); */
+
+    
     CHKSCN1ARG(sscanf(arg1, "%"SCNfreq, &freq));
     retval = rig_set_freq(rig, vfo, freq);
 
@@ -1965,9 +2091,45 @@ declare_proto_rig(set_freq)
     {
         //fprintf(fout, "%s%c", rig_strvfo(vfo), resp_sep);
         //fprintf(fout, fmt, (int64_t)freq, resp_sep);
-
     }
 
+    
+    // forward only this message to our SDR so it updates along with the radio we are controlling
+    int err = 0;
+    int server_sock = connect_to_sdr();
+    if( server_sock < 0 )
+    {
+        printf( "can't connect to gqrx...\n" );
+        err = -1;
+        goto exit_gracefully;
+    }
+    
+    // send command byte + space
+    ssize_t rc = send( server_sock, "F ", 2, 0 );
+    if( rc != 2 )
+    {
+        printf( "error writing command byte to socket.\n" );
+        err = -1;
+        goto exit_gracefully;
+    }
+
+    
+    rc = send( server_sock, (char*)arg1, strlen( arg1 ), 0 );
+    if( rc != strlen( arg1 ) )
+    {
+        printf( "error writing frequency to socket.\n" );
+        err = -1;
+    }
+
+exit_gracefully:
+    shutdown( server_sock, 2 );
+    close( server_sock );
+    if( err )
+        printf( "set freq socket error: %d\n", err );
+
+//    return err;
+
+    
     return retval;
 }
 
