@@ -1,3 +1,12 @@
+FORK: This is the regular ol' Hamlib but with one extra feature, we connect
+to gqrx and tune it any time the app gets a 'set frequency' request.  
+
+--> The code is just stuffed in and not production quality. <--
+
+This allows Hamlib to control whatever rig is specified but also to tune an SDR.
+My RPi4 has no audio input, instead I use a SDR and use my FT-450 as a transmitter (with a T/R switch).
+This feature allows me to set the freq in WSJT-X and have it tune both radios.
+
 Hamlib - (C) Frank Singleton 2000 (vk3fcs@ix.netcom.com)
          (C) Stephane Fillod 2000-2011
          (C) The Hamlib Group 2000-2012
